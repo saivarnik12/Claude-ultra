@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ClaudeUltra</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#040810;color:#dde1e7;font-family:'Segoe UI',system-ui,sans-serif;height:100vh;overflow:hidden}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#1a2744;border-radius:3px}
+textarea::placeholder,input::placeholder{color:#475569}
+textarea:focus,input:focus{border-color:#1e4a7a!important;outline:none}
+button:hover:not(:disabled){filter:brightness(1.12);transform:translateY(-1px)}
+button:active:not(:disabled){transform:translateY(0)}
+button:disabled{cursor:not-allowed;opacity:.6}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.md h1{font-size:1.35em;font-weight:700;color:#00e5ff;margin:14px 0 8px;padding-bottom:6px;border-bottom:1px solid #1a2744}
+.md h2{font-size:1.15em;font-weight:700;color:#7eb8f7;margin:12px 0 6px}
+.md h3{font-size:1.02em;font-weight:700;color:#90cdf4;margin:10px 0 4px}
+.md h4{font-size:.95em;font-weight:700;color:#bee3f8;margin:8px 0 4px}
+.md p{margin:6px 0;line-height:1.7}
+.md ul,.md ol{padding-left:20px;margin:6px 0}
+.md li{margin:3px 0;line-height:1.65}
+.md strong{font-weight:700;color:#e2e8f0}
+.md em{font-style:italic;color:#cbd5e0}
+.md code{background:#0a1628;padding:2px 6px;border-radius:4px;font-family:'Courier New',monospace;font-size:.87em;color:#7dd3fc;border:1px solid #1a2744}
+.md pre{background:#0a1628;padding:14px 16px;border-radius:8px;font-family:'Courier New',monospace;font-size:.87em;margin:10px 0;border-left:3px solid #00e5ff;overflow-x:auto;white-space:pre-wrap}
+.md blockquote{border-left:3px solid #00e5ff;margin:8px 0;padding:6px 14px;color:#94a3b8;background:#070e1a;border-radius:0 6px 6px 0}
+.md hr{border:none;border-top:1px solid #1a2744;margin:14px 0}
+.md table{border-collapse:collapse;width:100%;margin:10px 0;font-size:.9em}
+.md th{background:#0d1f3c;color:#7eb8f7;padding:7px 11px;text-align:left;font-weight:700;border:1px solid #1a2744}
+.md td{border:1px solid #1a2744;padding:6px 11px;color:#cbd5e0}
+.md tr:nth-child(even) td{background:#070e1a}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef,useEffect,useCallback}=React;
+
+/* ── API KEY STORAGE ── */
+const getKey=()=>localStorage.getItem('cu_key')||'';
+const saveKey=k=>localStorage.setItem('cu_key',k);
+
+/* ── ANTHROPIC API ── */
+async function callAI(messages,system='',useSearch=false,maxTokens=4000,apiKey=''){
+  if(!apiKey)throw new Error('API key not set. Click ⚙️ Settings to add your Anthropic API key.');
+  const body={
+    model:'claude-sonnet-4-20250514',
+    max_tokens:maxTokens,
+    messages,
+    ...(system&&{system}),
+    ...(useSearch&&{tools:[{type:'web_search_20250305',name:'web_search'}]}),
+  };
+  const r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify(body),
+  });
+  if(!r.ok){const e=await r.text();throw new Error('API Error: '+e);}
+  const d=await r.json();
+
+  if(d.stop_reason==='tool_use'){
+    const toolUses=d.content.filter(b=>b.type==='tool_use');
+    const toolResults=toolUses.map(t=>({type:'tool_result',tool_use_id:t.id,content:'Search complete. Provide a comprehensive, detailed answer using your knowledge.'}));
+    const r2=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({...body,messages:[...messages,{role:'assistant',content:d.content},{role:'user',content:toolResults}]}),
+    });
+    const d2=await r2.json();
+    return d2.content.filter(b=>b.type==='text').map(b=>b.text).join('\n');
+  }
+  return d.content.filter(b=>b.type==='text').map(b=>b.text).join('\n');
+}
+
+/* ── MARKDOWN → HTML ── */
+function renderMD(text){
+  if(!text)return'';
+  let t=text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/```[\w]*\n?([\s\S]*?)```/g,'<pre>$1</pre>')
+    .replace(/`([^`\n]+)`/g,'<code>$1</code>')
+    .replace(/^#{4} (.+)$/gm,'<h4>$1</h4>')
+    .replace(/^#{3} (.+)$/gm,'<h3>$1</h3>')
+    .replace(/^#{2} (.+)$/gm,'<h2>$1</h2>')
+    .replace(/^#{1} (.+)$/gm,'<h1>$1</h1>')
+    .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^---+$/gm,'<hr>')
+    .replace(/^\> (.+)$/gm,'<blockquote>$1</blockquote>')
+    .replace(/^\- (.+)$/gm,'<li>$1</li>')
+    .replace(/^\* (.+)$/gm,'<li>$1</li>')
+    .replace(/^\d+\. (.+)$/gm,'<li>$1</li>');
+  t=t.split(/\n\n+/).map(p=>{
+    p=p.trim();if(!p)return'';
+    if(/^<(h\d|ul|ol|li|pre|blockquote|hr)/.test(p))return p.includes('<li>')&&!p.includes('<ul>')?`<ul>${p}</ul>`:p;
+    return`<p>${p.replace(/\n/g,'<br>')}</p>`;
+  }).join('\n');
+  return t;
+}
+
+/* ── DOWNLOAD AS WORD DOC ── */
+function downloadDoc(htmlBody,filename){
+  const full=`<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+<head><meta charset='utf-8'><style>
+@page{size:8.5in 11in;margin:1in}
+body{font-family:Calibri,'Segoe UI',Arial,sans-serif;font-size:11pt;color:#111;line-height:1.75}
+h1{font-size:22pt;color:#0a1628;font-weight:700;padding-bottom:8px;border-bottom:3px solid #0057b8;margin-bottom:12px}
+h2{font-size:15pt;color:#003d87;font-weight:700;padding-bottom:3px;border-bottom:1.5px solid #0057b8;margin:22px 0 10px}
+h3{font-size:12.5pt;color:#004099;font-weight:700;margin:16px 0 6px}
+h4{font-size:11pt;color:#005cbf;font-weight:700;margin:12px 0 5px}
+p{margin:7px 0}ul,ol{margin:8px 0;padding-left:26px}li{margin:4px 0;line-height:1.65}
+strong{font-weight:700;color:#0a1628}em{font-style:italic}
+code{font-family:'Courier New',monospace;background:#eef2f8;padding:2px 5px;font-size:9.5pt;border-radius:3px}
+pre{background:#eef2f8;padding:12px 16px;font-family:'Courier New',monospace;font-size:9pt;margin:12px 0;border-left:4px solid #0057b8;white-space:pre-wrap}
+table{border-collapse:collapse;width:100%;margin:14px 0}
+th{background:#0057b8;color:#fff;padding:9px 13px;text-align:left;font-weight:700;font-size:10.5pt}
+td{border:1px solid #c5d5e8;padding:8px 13px;vertical-align:top}
+tr:nth-child(even) td{background:#f4f8fd}
+blockquote{border-left:4px solid #0057b8;margin:12px 0;padding:8px 16px;color:#444;font-style:italic;background:#f5f9ff}
+hr{border:none;border-top:1.5px solid #dde5f0;margin:18px 0}
+</style></head><body>${htmlBody}</body></html>`;
+  const blob=new Blob([full],{type:'application/msword'});
+  const url=URL.createObjectURL(blob);
+  const a=Object.assign(document.createElement('a'),{href:url,download:filename});
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+
+/* ── COLORS ── */
+const G={bg:'#040810',surface:'#07111f',surface2:'#0a1628',border:'#132035',accent:'#00e5ff',gold:'#fbbf24',green:'#34d399',red:'#f87171',text:'#dde1e7',muted:'#64748b',dim:'#94a3b8'};
+
+/* ── STYLES ── */
+const S={
+  input:{background:G.surface2,border:`1px solid ${G.border}`,borderRadius:8,color:G.text,padding:'11px 14px',fontSize:14,width:'100%',outline:'none',resize:'vertical',fontFamily:'inherit',lineHeight:1.6},
+  card:{background:G.surface,border:`1px solid ${G.border}`,borderRadius:12,padding:20},
+  label:{color:G.dim,fontSize:12,fontWeight:600,display:'block',marginBottom:6,letterSpacing:'.5px'},
+};
+
+function btn(color=G.accent,disabled=false,outline=false){
+  return{padding:'10px 22px',background:outline?'transparent':disabled?'#1a2744':`linear-gradient(135deg,${color},${color}cc)`,color:outline?color:disabled?G.muted:(color===G.accent?'#040810':'#fff'),border:outline?`1.5px solid ${color}`:'none',borderRadius:8,cursor:disabled?'not-allowed':'pointer',fontWeight:700,fontSize:13,transition:'all .2s',letterSpacing:'.3px'};
+}
+
+/* ════════════════ SETTINGS MODAL ════════════════ */
+function Settings({onClose}){
+  const [key,setKey]=useState(getKey());
+  const save=()=>{saveKey(key.trim());onClose();};
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999}}>
+      <div style={{...S.card,width:500,maxWidth:'95vw'}}>
+        <h3 style={{color:G.accent,marginBottom:6,fontSize:17}}>⚙️ API Key Settings</h3>
+        <p style={{color:G.muted,fontSize:13,marginBottom:18,lineHeight:1.6}}>
+          Get your free API key from <a href="https://console.anthropic.com" target="_blank" style={{color:G.accent}}>console.anthropic.com</a><br/>
+          Your key is stored only in your browser (localStorage) — never sent anywhere except Anthropic.
+        </p>
+        <label style={S.label}>ANTHROPIC API KEY</label>
+        <input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="sk-ant-api03-..." style={{...S.input,marginBottom:16,fontFamily:'monospace'}}/>
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={save} style={btn(G.accent)}>💾 Save Key</button>
+          <button onClick={onClose} style={btn('#1a2744',false,false)}>Cancel</button>
+        </div>
+        <p style={{color:G.muted,fontSize:11,marginTop:14}}>🔒 Key saved in browser only. Clears when you clear browser data.</p>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════ CHAT TAB ════════════════ */
+function ChatTab({apiKey}){
+  const [msgs,setMsgs]=useState([]);
+  const [input,setInput]=useState('');
+  const [busy,setBusy]=useState(false);
+  const endRef=useRef(null);
+  useEffect(()=>{endRef.current?.scrollIntoView({behavior:'smooth'})},[msgs,busy]);
+
+  const send=async()=>{
+    if(!input.trim()||busy)return;
+    const text=input.trim();setInput('');setBusy(true);
+    const history=[...msgs,{role:'user',content:text}];
+    setMsgs(history);
+    try{
+      const reply=await callAI(history,
+        'You are ClaudeUltra — an expert AI. Provide deep, complete, accurate answers on ANY topic. Use markdown formatting. Never truncate. Cover every angle thoroughly.',
+        true,4000,apiKey);
+      setMsgs([...history,{role:'assistant',content:reply}]);
+    }catch(e){setMsgs([...history,{role:'assistant',content:`⚠️ **Error:** ${e.message}`}]);}
+    setBusy(false);
+  };
+
+  const suggestions=['Explain machine learning from scratch','Write a Python web scraper','How does the stock market work?','Best practices for system design'];
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',height:'100%'}}>
+      <div style={{flex:1,overflowY:'auto',padding:'20px 24px',display:'flex',flexDirection:'column',gap:4}}>
+        {msgs.length===0&&(
+          <div style={{margin:'auto',textAlign:'center',opacity:.8}}>
+            <div style={{fontSize:52,marginBottom:14}}>🔬</div>
+            <div style={{color:G.accent,fontSize:21,fontWeight:700,marginBottom:8}}>Research Chat</div>
+            <div style={{color:G.dim,fontSize:14,maxWidth:400,margin:'0 auto',lineHeight:1.7}}>Ask anything — science, code, business, history, philosophy. Get deep comprehensive answers.</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center',marginTop:20}}>
+              {suggestions.map(q=>(
+                <button key={q} onClick={()=>setInput(q)} style={{background:G.surface2,border:`1px solid ${G.border}`,borderRadius:20,padding:'7px 14px',color:G.dim,fontSize:12,cursor:'pointer'}}>{q}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {msgs.map((m,i)=>(
+          <div key={i} style={{display:'flex',justifyContent:m.role==='user'?'flex-end':'flex-start',marginBottom:14}}>
+            {m.role==='assistant'&&<div style={{width:28,height:28,borderRadius:'50%',background:`linear-gradient(135deg,${G.accent},#0066cc)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,marginRight:8,flexShrink:0,marginTop:2}}>⚡</div>}
+            <div style={{maxWidth:'78%',padding:'12px 16px',borderRadius:m.role==='user'?'16px 16px 4px 16px':'16px 16px 16px 4px',background:m.role==='user'?'linear-gradient(135deg,#0057b8,#003d87)':G.surface2,border:m.role==='user'?'none':`1px solid ${G.border}`,color:G.text,fontSize:14,lineHeight:1.65}}>
+              {m.role==='user'?<span style={{whiteSpace:'pre-wrap'}}>{m.content}</span>:<div className="md" dangerouslySetInnerHTML={{__html:renderMD(m.content)}}/>}
+            </div>
+          </div>
+        ))}
+        {busy&&(
+          <div style={{display:'flex',gap:8,marginBottom:14}}>
+            <div style={{width:28,height:28,borderRadius:'50%',background:`linear-gradient(135deg,${G.accent},#0066cc)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,flexShrink:0}}>⚡</div>
+            <div style={{background:G.surface2,border:`1px solid ${G.border}`,borderRadius:'16px 16px 16px 4px',padding:'14px 18px',display:'flex',gap:6,alignItems:'center'}}>
+              {[0,.2,.4].map(d=>(<div key={d} style={{width:8,height:8,borderRadius:'50%',background:G.accent,animation:`pulse 1.2s ${d}s infinite`}}/>))}
+            </div>
+          </div>
+        )}
+        <div ref={endRef}/>
+      </div>
+      <div style={{padding:'14px 22px',borderTop:`1px solid ${G.border}`,background:G.surface,display:'flex',gap:10,alignItems:'flex-end'}}>
+        <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}} placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" rows={2} style={{...S.input,flex:1,resize:'none',minHeight:50}}/>
+        <button onClick={send} disabled={busy||!input.trim()} style={btn(G.accent,busy||!input.trim())}>{busy?'⏳':'Send ↑'}</button>
+        {msgs.length>0&&<button onClick={()=>setMsgs([])} style={{...btn('#1a2744'),color:G.dim}}>🗑️</button>}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════ LEARN TAB ════════════════ */
+function LearnTab({apiKey}){
+  const [topic,setTopic]=useState('');
+  const [depth,setDepth]=useState('comprehensive');
+  const [out,setOut]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [progress,setProgress]=useState('');
+
+  const generate=async()=>{
+    if(!topic.trim()||busy)return;
+    setBusy(true);setOut('');setProgress('🔍 Researching topic...');
+    const depthMap={
+      quick:'Write a solid introduction — 6-8 well-developed sections.',
+      comprehensive:'Write an exhaustive guide — 12+ sections with detailed explanations and examples.',
+      expert:'Write a professional expert-level deep-dive — 15+ sections with advanced concepts, code samples, case studies, and research-level depth.',
+    };
+    try{
+      setProgress('✍️ Writing your learning document (this may take 30-60 seconds)...');
+      const result=await callAI([{role:'user',content:`Create a ${depth} educational document on: **"${topic}"**
+
+${depthMap[depth]}
+
+Structure:
+# ${topic} — Complete Learning Guide
+
+## 📋 Executive Summary
+## 🏛️ History & Origins  
+## 🧩 Core Concepts & Fundamentals
+## 📖 Detailed Explanations with Real Examples
+## ⚙️ How It Works (Deep Dive)
+## 🚀 Advanced Topics & Techniques
+## 🌍 Real-World Applications & Use Cases
+## 🛠️ Tools, Technologies & Ecosystem
+## ⚠️ Common Mistakes & Pitfalls to Avoid
+## ✅ Best Practices & Pro Tips
+## 📊 Comparisons & Alternatives
+## 🔬 Case Studies
+## 🏋️ Exercises & Practice Projects
+## 🗺️ Learning Roadmap & Next Steps
+## 📚 Glossary of Key Terms
+## 🔑 Summary & Key Takeaways
+
+Make every section THOROUGH with real examples, concrete details, and actionable insights. Use tables, code blocks, and bullet points where helpful. This is a COMPLETE learning resource — never truncate.`}],
+        'You are a world-class educator and technical author. Create comprehensive, accurate, deeply detailed educational content. Always write the COMPLETE document — never stop early.',
+        true,4000,apiKey);
+      setOut(result);
+    }catch(e){setOut(`**Error:** ${e.message}`);}
+    setProgress('');setBusy(false);
+  };
+
+  const download=()=>{
+    const body=renderMD(out).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+    downloadDoc(`<h1>${topic} — Complete Learning Guide</h1>${body}`,`${topic.replace(/\s+/g,'_')}_Learning_Guide.doc`);
+  };
+
+  return(
+    <div style={{padding:24,overflowY:'auto',height:'100%'}}>
+      <div style={{maxWidth:880,margin:'0 auto'}}>
+        <h2 style={{color:G.accent,margin:'0 0 4px',fontSize:20,fontWeight:700}}>📚 Learn Anything — Generate Word Doc</h2>
+        <p style={{color:G.muted,fontSize:13,marginBottom:20}}>Type any topic → get a massive structured learning document → download as Word file</p>
+
+        <div style={{...S.card,marginBottom:16}}>
+          <label style={S.label}>TOPIC TO LEARN</label>
+          <input value={topic} onChange={e=>setTopic(e.target.value)} onKeyDown={e=>e.key==='Enter'&&generate()} placeholder="e.g. Machine Learning, React.js, Stock Market, Quantum Physics, Digital Marketing..." style={{...S.input,fontSize:15,marginBottom:14}}/>
+
+          <label style={S.label}>DEPTH LEVEL</label>
+          <div style={{display:'flex',gap:10,marginBottom:16}}>
+            {[{v:'quick',l:'⚡ Quick',d:'6-8 sections'},{v:'comprehensive',l:'📖 Comprehensive',d:'12+ sections'},{v:'expert',l:'🔬 Expert',d:'15+ advanced sections'}].map(({v,l,d})=>(
+              <button key={v} onClick={()=>setDepth(v)} style={{flex:1,padding:'10px',background:depth===v?G.surface2:'transparent',border:`2px solid ${depth===v?G.accent:G.border}`,borderRadius:8,color:depth===v?G.accent:G.muted,cursor:'pointer',transition:'all .2s',textAlign:'center'}}>
+                <div style={{fontWeight:700,fontSize:13}}>{l}</div>
+                <div style={{fontSize:11,color:G.muted,marginTop:2}}>{d}</div>
+              </button>
+            ))}
+          </div>
+
+          <div style={{display:'flex',gap:10}}>
+            <button onClick={generate} disabled={busy||!topic.trim()} style={{...btn(G.accent,busy||!topic.trim()),flex:1}}>
+              {busy?'✍️ Generating...':'🚀 Generate Learning Document'}
+            </button>
+            {out&&!busy&&<button onClick={download} style={btn('#0057b8')}>⬇️ Download .doc</button>}
+          </div>
+          {progress&&<div style={{marginTop:12,color:G.accent,fontSize:13,display:'flex',alignItems:'center',gap:8}}><div style={{width:7,height:7,borderRadius:'50%',background:G.accent,animation:'pulse 1s infinite'}}/>{progress}</div>}
+        </div>
+
+        {out&&(
+          <div style={S.card}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+              <span style={{color:G.green,fontWeight:700,fontSize:13}}>✅ Ready — {out.length.toLocaleString()} characters</span>
+              <button onClick={download} style={btn('#0057b8')}>⬇️ Download Word File</button>
+            </div>
+            <div className="md" dangerouslySetInnerHTML={{__html:renderMD(out)}} style={{color:G.text,fontSize:14,lineHeight:1.75,maxHeight:580,overflowY:'auto',paddingRight:8}}/>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════ RESUME TAB ════════════════ */
+function ResumeTab({apiKey}){
+  const [jd,setJd]=useState('');
+  const [info,setInfo]=useState('');
+  const [hrOut,setHrOut]=useState('');
+  const [resOut,setResOut]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [step,setStep]=useState('');
+  const [activeTab,setActiveTab]=useState('hr');
+
+  const generate=async()=>{
+    if(!jd.trim()||busy)return;
+    setBusy(true);setHrOut('');setResOut('');setActiveTab('hr');
+    try{
+      setStep('🔍 HR Director analyzing the job description...');
+      const hrResult=await callAI([{role:'user',content:`You are a Senior HR Director & Talent Acquisition Specialist with 20+ years at Fortune 500 companies. Analyze this job description:
+
+━━━━ JOB DESCRIPTION ━━━━
+${jd}
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+${info?`CANDIDATE BACKGROUND:\n${info}`:'No candidate info provided — do general analysis.'}
+
+Provide COMPREHENSIVE HR analysis:
+
+## 👔 HR Director Full Analysis
+
+### 1. Role Intelligence
+- Seniority level, reporting structure, team dynamics
+
+### 2. Must-Have Requirements (Non-Negotiables)
+- Hard skills ranked by importance
+- Soft skills expected
+- Experience requirements (stated vs. actual)
+
+### 3. Nice-to-Have Differentiators
+
+### 4. Hidden Requirements (Reading Between the Lines)
+
+### 5. Company Culture Indicators
+
+### 6. 💰 Salary & Compensation Estimate
+- Base salary range with market data
+- Total comp (bonus, equity, benefits)
+- Negotiation leverage points
+
+### 7. 🎯 ATS Keywords — MUST Include All
+List every critical keyword from the JD
+
+### 8. What the Hiring Manager REALLY Wants
+
+### 9. Red Flags & How to Address Them
+
+### 10. Resume Strategy
+- Sections to emphasize
+- What to lead with
+- What to downplay
+
+### 11. Interview Preparation Topics
+
+### 12. ✅ Candidacy Assessment (if info provided)
+- Fit score: X/10
+- Strengths to highlight
+- Gaps to address or reframe`}],
+        'You are the world\'s most experienced HR director. Give brutally honest, deeply insightful analysis. Be specific and actionable.',
+        false,3000,apiKey);
+      setHrOut(hrResult);
+
+      setStep('📝 Building ATS-optimized professional resume...');
+      const resResult=await callAI([{role:'user',content:`As a top-tier professional resume writer, create a WORLD-CLASS ATS-optimized resume for this role.
+
+━━━━ JOB DESCRIPTION ━━━━
+${jd}
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+${info?`CANDIDATE INFORMATION:\n${info}`:'Create a strong template tailored to this role. Use realistic placeholder data.'}
+
+Write the complete resume using this format:
+
+# [Full Name]
+**[Exact Job Title from JD]**
+
+📧 email@example.com | 📱 (555) 000-0000 | 🔗 linkedin.com/in/yourname | 📍 City, State | 🌐 portfolio.com
+
+---
+
+## PROFESSIONAL SUMMARY
+[3-4 powerful sentences. Mention years of experience, 2-3 key strengths matching the JD, and a clear value proposition. Tailored specifically to this role.]
+
+---
+
+## CORE COMPETENCIES
+[List 12-15 skills in 3 columns, using exact keywords from the JD]
+Skill 1 | Skill 2 | Skill 3
+Skill 4 | Skill 5 | Skill 6
+Skill 7 | Skill 8 | Skill 9
+Skill 10 | Skill 11 | Skill 12
+
+---
+
+## PROFESSIONAL EXPERIENCE
+
+### [Most Recent Title] | [Company] | [City, State] | [Month Year – Present]
+*[One-line company description with employee count or revenue if notable]*
+- Led [initiative] resulting in [X% improvement / $Y revenue / Z hours saved]
+- Built/Developed [system/product] that [quantified impact]
+- Managed [team size/budget] to deliver [outcome with metric]
+- Drove [process/project] achieving [measurable result]
+- Collaborated with [stakeholders] to [achieve outcome]
+
+### [Previous Title] | [Company] | [City, State] | [Month Year – Month Year]
+- [Achievement with metric]
+- [Achievement with metric]
+- [Achievement with metric]
+- [Achievement with metric]
+
+### [Earlier Title] | [Company] | [City, State] | [Month Year – Month Year]
+- [Achievement with metric]
+- [Achievement with metric]
+- [Achievement with metric]
+
+---
+
+## EDUCATION
+
+**[Degree, Major]** — [University Name], [City, State] | [Year]
+*[Honors/GPA if impressive | Relevant coursework]*
+
+---
+
+## CERTIFICATIONS
+- [Certification Name] — [Issuing Organization] | [Year]
+- [Certification Name] — [Issuing Organization] | [Year]
+- [Certification Name] — [Issuing Organization] | [Year]
+
+---
+
+## KEY PROJECTS
+**[Project Name]:** [Description with technology used and impact metric]
+**[Project Name]:** [Description with technology used and impact metric]
+
+---
+
+## TECHNICAL SKILLS
+**[Category 1]:** [Tools/technologies matching JD]
+**[Category 2]:** [Tools/technologies matching JD]
+**[Category 3]:** [Tools/technologies matching JD]
+
+RULES:
+- Every bullet MUST start with a strong action verb (Led, Built, Designed, Drove, Achieved, etc.)
+- Every bullet MUST have a quantified metric (%, $, numbers, time)
+- Include ALL major keywords from the JD naturally in the text
+- Make it impressive, specific, and ATS-optimized`}],
+        'You are a top-tier professional resume writer. Create compelling, ATS-optimized, metrics-driven resumes. Be specific and impressive. Complete the full resume.',
+        false,3500,apiKey);
+      setResOut(resResult);
+      setActiveTab('resume');
+    }catch(e){setHrOut(`**Error:** ${e.message}`);}
+    setStep('');setBusy(false);
+  };
+
+  return(
+    <div style={{padding:24,overflowY:'auto',height:'100%'}}>
+      <div style={{maxWidth:1050,margin:'0 auto'}}>
+        <h2 style={{color:G.gold,margin:'0 0 4px',fontSize:20,fontWeight:700}}>💼 HR Resume Builder</h2>
+        <p style={{color:G.muted,fontSize:13,marginBottom:20}}>Paste job description → get HR analysis + ATS-optimized resume → download as Word</p>
+
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}}>
+          <div style={S.card}>
+            <label style={S.label}>📋 JOB DESCRIPTION *</label>
+            <textarea value={jd} onChange={e=>setJd(e.target.value)} placeholder="Paste the full job description — title, company, responsibilities, requirements..." rows={10} style={{...S.input,minHeight:210}}/>
+          </div>
+          <div style={S.card}>
+            <label style={S.label}>🙋 YOUR BACKGROUND (Optional)</label>
+            <textarea value={info} onChange={e=>setInfo(e.target.value)} placeholder="Paste your current resume, or describe your experience, skills, education, achievements...&#10;&#10;Leave blank to get a professional template tailored to this role." rows={10} style={{...S.input,minHeight:210}}/>
+          </div>
+        </div>
+
+        <div style={{...S.card,marginBottom:16}}>
+          <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+            <button onClick={generate} disabled={busy||!jd.trim()} style={{...btn(G.gold,busy||!jd.trim()),flex:1,minWidth:200,color:'#040810'}}>
+              {busy?`⏳ ${step||'Processing...'}`:'🚀 Generate HR Analysis + Resume'}
+            </button>
+            {resOut&&!busy&&<button onClick={()=>downloadDoc(renderMD(resOut).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&'),'Professional_Resume.doc')} style={btn('#0057b8')}>⬇️ Resume .doc</button>}
+            {hrOut&&!busy&&<button onClick={()=>downloadDoc('<h1>HR Analysis Report</h1>'+renderMD(hrOut).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&'),'HR_Analysis_Report.doc')} style={{...btn('#1a2744'),color:G.dim,border:`1px solid ${G.border}`}}>📊 HR Report .doc</button>}
+          </div>
+          {step&&busy&&<div style={{marginTop:10,color:G.gold,fontSize:13,display:'flex',alignItems:'center',gap:8}}><div style={{width:7,height:7,borderRadius:'50%',background:G.gold,animation:'pulse 1s infinite'}}/>{step}</div>}
+        </div>
+
+        {(hrOut||resOut)&&(
+          <div style={S.card}>
+            <div style={{display:'flex',gap:4,marginBottom:18,background:G.surface2,borderRadius:8,padding:4,width:'fit-content'}}>
+              {[['hr','👔 HR Analysis'],['resume','📄 Resume']].map(([k,label])=>(
+                <button key={k} onClick={()=>setActiveTab(k)} style={{padding:'8px 20px',background:activeTab===k?G.gold:'transparent',color:activeTab===k?'#040810':G.dim,border:'none',borderRadius:6,cursor:'pointer',fontWeight:activeTab===k?700:500,fontSize:13,transition:'all .2s'}}>{label}</button>
+              ))}
+            </div>
+            {activeTab==='hr'&&hrOut&&(
+              <div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <span style={{color:G.green,fontWeight:700,fontSize:13}}>✅ HR Analysis Complete</span>
+                  <button onClick={()=>downloadDoc('<h1>HR Analysis Report</h1>'+renderMD(hrOut).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&'),'HR_Analysis_Report.doc')} style={btn('#0057b8')}>⬇️ Download HR Report</button>
+                </div>
+                <div className="md" dangerouslySetInnerHTML={{__html:renderMD(hrOut)}} style={{color:G.text,fontSize:14,lineHeight:1.75,maxHeight:580,overflowY:'auto',paddingRight:8}}/>
+              </div>
+            )}
+            {activeTab==='resume'&&resOut&&(
+              <div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <span style={{color:G.green,fontWeight:700,fontSize:13}}>✅ Resume Ready</span>
+                  <button onClick={()=>downloadDoc(renderMD(resOut).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&'),'Professional_Resume.doc')} style={btn('#0057b8')}>⬇️ Download Resume</button>
+                </div>
+                <div className="md" dangerouslySetInnerHTML={{__html:renderMD(resOut)}} style={{color:G.text,fontSize:14,lineHeight:1.75,maxHeight:580,overflowY:'auto',paddingRight:8,background:'#07111f',padding:'20px 24px',borderRadius:8,border:`1px solid ${G.border}`}}/>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════ APP ════════════════ */
+function App(){
+  const [tab,setTab]=useState('chat');
+  const [showSettings,setShowSettings]=useState(false);
+  const [apiKey,setApiKeyState]=useState(getKey());
+
+  const handleSettingsClose=()=>{
+    setApiKeyState(getKey());
+    setShowSettings(false);
+  };
+
+  const tabBtn=(id,label,active)=>({
+    padding:'9px 18px',background:active?G.accent:'transparent',color:active?'#040810':G.dim,
+    border:active?'none':`1px solid ${G.border}`,borderRadius:8,cursor:'pointer',fontWeight:active?700:500,
+    fontSize:13,transition:'all .2s',letterSpacing:'.3px'
+  });
+
+  return(
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',background:G.bg,color:G.text,overflow:'hidden'}}>
+      {showSettings&&<Settings onClose={handleSettingsClose}/>}
+
+      {/* Header */}
+      <div style={{padding:'12px 24px',borderBottom:`1px solid ${G.border}`,background:G.surface,display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:12}}>
+          <div style={{width:34,height:34,borderRadius:9,background:`linear-gradient(135deg,${G.accent},#0044bb)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700}}>⚡</div>
+          <div>
+            <div style={{fontWeight:800,fontSize:16,color:G.text}}>ClaudeUltra</div>
+            <div style={{fontSize:10,color:G.muted,letterSpacing:'.5px'}}>POWERED BY CLAUDE SONNET 4 · RESEARCH · LEARN · RESUME</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <div style={{display:'flex',gap:6'}}>
+            {[['chat','🔬 Research'],['learn','📚 Learn'],['resume','💼 Resume']].map(([id,label])=>(
+              <button key={id} onClick={()=>setTab(id)} style={tabBtn(id,label,tab===id)}>{label}</button>
+            ))}
+          </div>
+          <button onClick={()=>setShowSettings(true)} style={{...tabBtn('s','',false),padding:'9px 12px',marginLeft:4,position:'relative'}} title="Settings - Add API Key">
+            ⚙️{!apiKey&&<span style={{position:'absolute',top:4,right:4,width:7,height:7,borderRadius:'50%',background:G.red,display:'block'}}/>}
+          </button>
+        </div>
+      </div>
+
+      {/* No API key warning */}
+      {!apiKey&&(
+        <div style={{background:'#1a0a00',borderBottom:`1px solid #5a2d00`,padding:'10px 24px',display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          <span style={{fontSize:16}}>🔑</span>
+          <span style={{color:'#fbbf24',fontSize:13}}>No API key set. <button onClick={()=>setShowSettings(true)} style={{background:'none',border:'none',color:G.accent,cursor:'pointer',fontWeight:700,fontSize:13,textDecoration:'underline'}}>Click ⚙️ Settings</button> to add your Anthropic API key to use ClaudeUltra.</span>
+        </div>
+      )}
+
+      {/* Tab content */}
+      <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        {tab==='chat'&&<ChatTab apiKey={apiKey}/>}
+        {tab==='learn'&&<LearnTab apiKey={apiKey}/>}
+        {tab==='resume'&&<ResumeTab apiKey={apiKey}/>}
+      </div>
+
+      {/* Footer */}
+      <div style={{padding:'5px 24px',borderTop:`1px solid ${G.border}`,background:G.surface,display:'flex',justifyContent:'space-between',fontSize:11,color:G.muted,flexShrink:0}}>
+        <span>Claude Sonnet 4 · Web Search · Unlimited Depth · Downloads as Word .doc</span>
+        <span style={{color:apiKey?G.green:G.red}}>{apiKey?'🟢 API Key Active':'🔴 API Key Required'}</span>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
